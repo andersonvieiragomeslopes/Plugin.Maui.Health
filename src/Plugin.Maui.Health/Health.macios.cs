@@ -718,4 +718,218 @@ partial class HealthDataProviderImplementation : IHealth
 		return await tcs.Task;
 
 	}
+
+	// ────────────────────────────────────────────────────────────────────────────
+	// Workout operations
+	// ────────────────────────────────────────────────────────────────────────────
+
+	/// <summary>
+	/// Reads all workouts of <paramref name="workoutType"/> in the given date range.
+	/// GPS route data is included when the workout was recorded with location and the user has
+	/// granted permission for <c>HKSeriesType.WorkoutRoute</c>.
+	/// </summary>
+	public async Task<List<Workout>> ReadAllWorkoutsAsync(WorkoutType workoutType, DateTime from, DateTime until)
+	{
+		await semaphore.WaitAsync();
+		var tcs = new TaskCompletionSource<List<Workout>>();
+
+		try
+		{
+			if (!IsSupported)
+				throw new HealthException("HealthKit not available on your device");
+
+			if (!workoutTypeMapping.TryGetValue(workoutType, out var hkWorkoutType))
+				throw new HealthException($"{workoutType} is not supported.");
+
+			var predicate = HKQuery.GetPredicateForWorkouts(hkWorkoutType);
+			var timePredicate = HKQuery.GetPredicateForSamples((NSDate)from, (NSDate)until, HKQueryOptions.StrictStartDate);
+			var combinedPredicate = NSCompoundPredicate.CreateAndPredicate(new NSPredicate[] { predicate, timePredicate });
+
+			var sortDescriptors = new[] { new NSSortDescriptor(HKSample.SortIdentifierEndDate, true) };
+			var workoutType_hk = HKObjectType.GetWorkoutType();
+
+			var query = new HKSampleQuery(
+				workoutType_hk,
+				combinedPredicate,
+				HKSampleQuery.NoLimit,
+				sortDescriptors,
+				async (HKSampleQuery _, HKSample[] results, NSError error) =>
+				{
+					if (error is not null)
+					{
+						tcs.SetException(new HealthException(error.LocalizedDescription));
+						return;
+					}
+
+					var workouts = new List<Workout>();
+					foreach (HKWorkout workout in results?.Cast<HKWorkout>() ?? [])
+					{
+						var route = await FetchWorkoutRouteAsync(workout);
+
+						workouts.Add(new Workout(
+							workoutType: workoutType,
+							from: (DateTime)workout.StartDate,
+							until: (DateTime)workout.EndDate,
+							durationInSeconds: workout.Duration,
+							energyBurnedInCalorie: workout.TotalEnergyBurned?.GetDoubleValue(HKUnit.Kilocalorie),
+							totalDistanceInMeter: workout.TotalDistance?.GetDoubleValue(HKUnit.Meter),
+							source: workout.SourceRevision?.Source?.Name ?? string.Empty,
+							route: route));
+					}
+
+					tcs.SetResult(workouts);
+				});
+
+			healthStore.ExecuteQuery(query);
+		}
+		catch (Exception ex)
+		{
+			tcs.SetException(new HealthException(ex.Message, ex));
+		}
+		finally
+		{
+			semaphore.Release();
+		}
+
+		return await tcs.Task;
+	}
+
+	/// <summary>
+	/// Returns the most recent workout of <paramref name="workoutType"/> in the given date range,
+	/// including GPS route data when available.
+	/// </summary>
+	public async Task<Workout?> ReadLatestWorkoutAsync(WorkoutType workoutType, DateTime from, DateTime until)
+	{
+		await semaphore.WaitAsync();
+		var tcs = new TaskCompletionSource<Workout?>();
+
+		try
+		{
+			if (!IsSupported)
+				throw new HealthException("HealthKit not available on your device");
+
+			if (!workoutTypeMapping.TryGetValue(workoutType, out var hkWorkoutType))
+				throw new HealthException($"{workoutType} is not supported.");
+
+			var predicate = HKQuery.GetPredicateForWorkouts(hkWorkoutType);
+			var timePredicate = HKQuery.GetPredicateForSamples((NSDate)from, (NSDate)until, HKQueryOptions.StrictStartDate);
+			var combinedPredicate = NSCompoundPredicate.CreateAndPredicate(new NSPredicate[] { predicate, timePredicate });
+
+			var sortDescriptors = new[] { new NSSortDescriptor(HKSample.SortIdentifierEndDate, false) };
+			var workoutType_hk = HKObjectType.GetWorkoutType();
+
+			var query = new HKSampleQuery(
+				workoutType_hk,
+				combinedPredicate,
+				1,
+				sortDescriptors,
+				async (HKSampleQuery _, HKSample[] results, NSError error) =>
+				{
+					if (error is not null)
+					{
+						tcs.SetException(new HealthException(error.LocalizedDescription));
+						return;
+					}
+
+					if (results is null || results.Length == 0)
+					{
+						tcs.SetResult(null);
+						return;
+					}
+
+					var workout = (HKWorkout)results[0];
+					var route = await FetchWorkoutRouteAsync(workout);
+
+					tcs.SetResult(new Workout(
+						workoutType: workoutType,
+						from: (DateTime)workout.StartDate,
+						until: (DateTime)workout.EndDate,
+						durationInSeconds: workout.Duration,
+						energyBurnedInCalorie: workout.TotalEnergyBurned?.GetDoubleValue(HKUnit.Kilocalorie),
+						totalDistanceInMeter: workout.TotalDistance?.GetDoubleValue(HKUnit.Meter),
+						source: workout.SourceRevision?.Source?.Name ?? string.Empty,
+						route: route));
+				});
+
+			healthStore.ExecuteQuery(query);
+		}
+		catch (Exception ex)
+		{
+			tcs.SetException(new HealthException(ex.Message, ex));
+		}
+		finally
+		{
+			semaphore.Release();
+		}
+
+		return await tcs.Task;
+	}
+
+	/// <summary>
+	/// Queries the <see cref="HKWorkoutRoute"/> samples associated with <paramref name="workout"/> and
+	/// returns all GPS coordinates as an ordered list of <see cref="WorkoutCoordinate"/>.
+	/// Returns <see langword="null"/> when no route data is available.
+	/// </summary>
+	async Task<IReadOnlyList<WorkoutCoordinate>?> FetchWorkoutRouteAsync(HKWorkout workout)
+	{
+		var routeType = HKSeriesType.WorkoutRoute;
+		var routePredicate = HKQuery.GetPredicateForObjects(workout);
+		var routeTcs = new TaskCompletionSource<IReadOnlyList<WorkoutCoordinate>?>();
+		var coordinates = new List<WorkoutCoordinate>();
+
+		var routeQuery = new HKAnchoredObjectQuery(
+			routeType,
+			routePredicate,
+			null,
+			HKAnchoredObjectQuery.NoLimit,
+			(HKAnchoredObjectQuery _, HKSample[] routeSamples, HKDeletedObject[] _, HKQueryAnchor _, NSError routeError) =>
+			{
+				var routes = routeSamples?.OfType<HKWorkoutRoute>().ToList() ?? [];
+
+				if (routeError is not null || routes.Count == 0)
+				{
+					routeTcs.TrySetResult(coordinates.Count > 0 ? coordinates.AsReadOnly() : null);
+					return;
+				}
+
+				int remaining = routes.Count;
+
+				foreach (HKWorkoutRoute route in routes)
+				{
+					var locationCoords = new List<WorkoutCoordinate>();
+
+					var locationQuery = new HKWorkoutRouteQuery(
+						route,
+						(HKWorkoutRouteQuery _, CoreLocation.CLLocation[] locations, bool done, NSError locationError) =>
+						{
+							if (locationError is null && locations is not null)
+							{
+								foreach (var loc in locations)
+								{
+									locationCoords.Add(new WorkoutCoordinate(
+										timestamp: (DateTime)loc.Timestamp,
+										latitude: loc.Coordinate.Latitude,
+										longitude: loc.Coordinate.Longitude,
+										altitude: loc.Altitude));
+								}
+							}
+
+							if (done)
+							{
+								lock (coordinates)
+									coordinates.AddRange(locationCoords);
+
+								if (System.Threading.Interlocked.Decrement(ref remaining) == 0)
+									routeTcs.TrySetResult(coordinates.Count > 0 ? coordinates.AsReadOnly() : null);
+							}
+						});
+
+					healthStore.ExecuteQuery(locationQuery);
+				}
+			});
+
+		healthStore.ExecuteQuery(routeQuery);
+
+		return await routeTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+	}
 }

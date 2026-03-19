@@ -12,8 +12,15 @@ public sealed record Workout
 	public double? EnergyBurnedInCalorie { get; }
 	public double? TotalDistanceInMeter { get; }
 
+	/// <summary>
+	/// Gets the ordered list of GPS coordinates that make up the workout route.
+	/// Returns <see langword="null"/> when GPS data was not recorded or is unavailable for the platform.
+	/// </summary>
+	public IReadOnlyList<WorkoutCoordinate>? Route { get; }
+
 	public Workout(WorkoutType workoutType, DateTime? from, DateTime? until, double durationInSeconds,
-		double? energyBurnedInCalorie, double? totalDistanceInMeter, string source)
+		double? energyBurnedInCalorie, double? totalDistanceInMeter, string source,
+		IReadOnlyList<WorkoutCoordinate>? route = null)
 	{
 		WorkoutType = workoutType;
 		Source = source;
@@ -22,5 +29,6 @@ public sealed record Workout
 		DurationInSeconds = durationInSeconds;
 		EnergyBurnedInCalorie = energyBurnedInCalorie;
 		TotalDistanceInMeter = totalDistanceInMeter;
+		Route = route;
 	}
 }
