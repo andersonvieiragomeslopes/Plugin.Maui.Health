@@ -242,7 +242,7 @@ partial class HealthDataProviderImplementation : IHealth
 	/// <paramref name="healthParameter"/>.  Returns <see langword="null"/> for record types where
 	/// a single scalar cannot be determined (e.g. blood pressure — query each component separately).
 	/// </summary>
-	static double? ExtractValue(Record record, HealthParameter healthParameter)
+	static double? ExtractValue(IRecord record, HealthParameter healthParameter)
 	{
 		return record switch
 		{
@@ -252,7 +252,7 @@ partial class HealthDataProviderImplementation : IHealth
 			BodyFatRecord r                     => r.Percentage.Value,
 			LeanBodyMassRecord r                => r.Mass.InKilograms,
 			BoneMassRecord r                    => r.Mass.InKilograms,
-		BodyMassIndexRecord r               => r.Bmi,
+			BodyMassIndexRecord r               => r.Bmi,
 			WaistCircumferenceRecord r          => r.Circumference.InMeters,
 			ActiveCaloriesBurnedRecord r        => r.Energy.InCalories,
 			BasalMetabolicRateRecord r          => r.BasalMetabolicRate.InWatts,
@@ -321,25 +321,29 @@ partial class HealthDataProviderImplementation : IHealth
 		_                                            => null,
 	};
 
-	static DateTime? GetRecordStartTime(Record record)
+	static DateTime? GetRecordStartTime(IRecord record)
 	{
-		if (record is IntervalRecord interval)
-			return FromInstant(interval.StartTime);
-		if (record is InstantaneousRecord instant)
-			return FromInstant(instant.Time);
+		var startTimeProp = record.GetType().GetProperty("StartTime");
+		if (startTimeProp?.GetValue(record) is Instant startInstant)
+			return FromInstant(startInstant);
+		var timeProp = record.GetType().GetProperty("Time");
+		if (timeProp?.GetValue(record) is Instant timeInstant)
+			return FromInstant(timeInstant);
 		return null;
 	}
 
-	static DateTime? GetRecordEndTime(Record record)
+	static DateTime? GetRecordEndTime(IRecord record)
 	{
-		if (record is IntervalRecord interval)
-			return FromInstant(interval.EndTime);
-		if (record is InstantaneousRecord instant)
-			return FromInstant(instant.Time);
+		var endTimeProp = record.GetType().GetProperty("EndTime");
+		if (endTimeProp?.GetValue(record) is Instant endInstant)
+			return FromInstant(endInstant);
+		var timeProp = record.GetType().GetProperty("Time");
+		if (timeProp?.GetValue(record) is Instant timeInstant)
+			return FromInstant(timeInstant);
 		return null;
 	}
 
-	static string GetRecordSource(Record record) =>
+	static string GetRecordSource(IRecord record) =>
 		record.Metadata?.DataOrigin?.PackageName ?? string.Empty;
 
 	// ────────────────────────────────────────────────────────────────────────────
@@ -579,7 +583,7 @@ partial class HealthDataProviderImplementation : IHealth
 		}
 	}
 
-	static Record BuildWriteRecord(HealthParameter hp, Type recordType, double value, Instant instant)
+	static IRecord BuildWriteRecord(HealthParameter hp, Type recordType, double value, Instant instant)
 	{
 		var metadata = new Metadata(
 			clientRecordId: null,

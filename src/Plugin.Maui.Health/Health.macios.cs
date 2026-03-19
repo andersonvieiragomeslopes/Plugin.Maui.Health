@@ -746,7 +746,7 @@ partial class HealthDataProviderImplementation : IHealth
 			var combinedPredicate = NSCompoundPredicate.CreateAndPredicate(new NSPredicate[] { predicate, timePredicate });
 
 			var sortDescriptors = new[] { new NSSortDescriptor(HKSample.SortIdentifierEndDate, true) };
-			var workoutType_hk = HKObjectType.GetWorkoutType();
+			var workoutType_hk = HKObjectType.WorkoutType;
 
 			var query = new HKSampleQuery(
 				workoutType_hk,
@@ -816,7 +816,7 @@ partial class HealthDataProviderImplementation : IHealth
 			var combinedPredicate = NSCompoundPredicate.CreateAndPredicate(new NSPredicate[] { predicate, timePredicate });
 
 			var sortDescriptors = new[] { new NSSortDescriptor(HKSample.SortIdentifierEndDate, false) };
-			var workoutType_hk = HKObjectType.GetWorkoutType();
+			var workoutType_hk = HKObjectType.WorkoutType;
 
 			var query = new HKSampleQuery(
 				workoutType_hk,
@@ -872,8 +872,8 @@ partial class HealthDataProviderImplementation : IHealth
 	/// </summary>
 	async Task<IReadOnlyList<WorkoutCoordinate>?> FetchWorkoutRouteAsync(HKWorkout workout)
 	{
-		var routeType = HKSeriesType.WorkoutRoute;
-		var routePredicate = HKQuery.GetPredicateForObjects(workout);
+		var routeType = HKSeriesType.WorkoutRouteType;
+		var routePredicate = HKQuery.GetPredicateForObjectsFromWorkout(workout);
 		var routeTcs = new TaskCompletionSource<IReadOnlyList<WorkoutCoordinate>?>();
 		var coordinates = new List<WorkoutCoordinate>();
 
@@ -881,7 +881,7 @@ partial class HealthDataProviderImplementation : IHealth
 			routeType,
 			routePredicate,
 			null,
-			HKAnchoredObjectQuery.NoLimit,
+			(nuint)0,
 			(HKAnchoredObjectQuery _, HKSample[] routeSamples, HKDeletedObject[] _, HKQueryAnchor _, NSError routeError) =>
 			{
 				var routes = routeSamples?.OfType<HKWorkoutRoute>().ToList() ?? [];
