@@ -29,6 +29,9 @@ jobs:
           PREVIEW="${BASE}-preview.${{ github.run_number }}"
           echo "version=${PREVIEW}" >> $GITHUB_OUTPUT
 
+      - name: Install .NET workloads
+        run: dotnet workload restore src\Plugin.Maui.Health.sln
+
       - name: Pack
         run: dotnet pack src\Plugin.Maui.Health.sln -c Release -p:PackageVersion=${{ steps.version.outputs.version }}
 
