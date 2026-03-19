@@ -19,6 +19,8 @@ jobs:
       - name: Get version information from tag
         id: get_version
         uses: battila7/get-version-action@v2
+      - name: Install .NET workloads
+        run: dotnet workload restore src\Plugin.Maui.Health.sln
       - name: Pack
         run: dotnet pack src\Plugin.Maui.Health.sln -c Release -p:PackageVersion=${{ steps.get_version.outputs.version-without-v }}
       - name: Push

@@ -16,6 +16,6 @@ public interface IHealth
 	Task<List<Sample>> ReadAllAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit);
 	Task<bool> WriteAsync(HealthParameter healthParameter, DateTime? date, double valueToStore, string unit);
 
-	//Task<List<Workout>> ReadAllWorkoutsAsync(WorkoutType workoutType, DateTime from, DateTime until);
-	//Task<Workout?> ReadLatestWorkoutAsync(WorkoutType workoutType, DateTime from, DateTime until);
+	Task<List<Workout>> ReadAllWorkoutsAsync(WorkoutType workoutType, DateTime from, DateTime until);
+	Task<Workout?> ReadLatestWorkoutAsync(WorkoutType workoutType, DateTime from, DateTime until);
 }

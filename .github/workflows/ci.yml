@@ -15,5 +15,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
+    - name: Install .NET workloads
+      run: dotnet workload restore src\Plugin.Maui.Health.sln
     - name: Build
       run: dotnet build src\Plugin.Maui.Health.sln -c Release

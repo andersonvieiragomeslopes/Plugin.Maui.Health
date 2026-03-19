@@ -15,7 +15,7 @@
 		<PackageProjectUrl>https://github.com/0xc3u/Plugin.Maui.Health</PackageProjectUrl>
 		<RepositoryUrl>https://github.com/0xc3u/Plugin.Maui.Health</RepositoryUrl>
 		<RepositoryType>git</RepositoryType>
-		<PackageTags>dotnet-maui;maui;plugin;healthkit;</PackageTags>
+		<PackageTags>dotnet-maui;maui;plugin;healthkit;healthconnect;</PackageTags>
 		<IncludeSymbols>True</IncludeSymbols>
 		<PublishRepositoryUrl>true</PublishRepositoryUrl>
 		<EmbedUntrackedSources>true</EmbedUntrackedSources>
@@ -62,9 +62,6 @@
 	</ItemGroup>
 	
 	<ItemGroup>
-		<PackageReference Include="Google.Apis" Version="1.73.0" />
-		<PackageReference Include="Google.Apis.Auth" Version="1.73.0" />
-		<PackageReference Include="Google.Apis.Fitness.v1" Version="1.70.0.3883" />
 		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.0.0" PrivateAssets="all" IsImplicitlyDefined="true" />
 		<PackageReference Include="System.Management" Version="7.0.0" Condition="$(TargetFramework.Contains('-windows')) == true" />
 		<PackageReference Include="Microsoft.Maui.Essentials" Version="9.0.120" />
@@ -74,13 +71,10 @@
 	<ItemGroup>
 		<None Include="..\..\nuget.png" PackagePath="icon.png" Pack="true" />
 	</ItemGroup>
+
+	<!-- Android Health Connect (replaces deprecated Google Fit API) -->
 	<ItemGroup Condition="'$(TargetFramework)' == 'net9.0-android'">
-	  <PackageReference Include="Xamarin.GooglePlayServices.Base">
-	    <Version>118.2.0.2</Version>
-	  </PackageReference>
-	  <PackageReference Include="Xamarin.GooglePlayServices.Fitness">
-	    <Version>121.1.0.4</Version>
-	  </PackageReference>
+	  <PackageReference Include="Xamarin.AndroidX.Health.Connect.ConnectClient" Version="1.1.0.2" />
 	</ItemGroup>
 
 </Project>

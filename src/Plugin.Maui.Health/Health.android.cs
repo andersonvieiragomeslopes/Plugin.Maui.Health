@@ -1,347 +1,796 @@
-﻿using Android.Content.PM;
-using Google.Apis.Auth.OAuth2;
-using Google.Apis.Fitness.v1;
-using Google.Apis.Fitness.v1.Data;
-using Google.Apis.Services;
-using Google.Apis.Util.Store;
+﻿using AndroidX.Health.Connect.Client;
+using AndroidX.Health.Connect.Client.Permission;
+using AndroidX.Health.Connect.Client.Records;
+using AndroidX.Health.Connect.Client.Records.Metadata;
+using AndroidX.Health.Connect.Client.Request;
+using AndroidX.Health.Connect.Client.Time;
+using AndroidX.Health.Connect.Client.Units;
+using Java.Time;
 using Microsoft.Maui.ApplicationModel;
 using Plugin.Maui.Health.Enums;
 using Plugin.Maui.Health.Exceptions;
-//using Plugin.Maui.Health.Extensions;
 using Plugin.Maui.Health.Models;
 
 namespace Plugin.Maui.Health;
 
 partial class HealthDataProviderImplementation : IHealth
 {
-	public bool IsSupported => throw new NotImplementedException();
+	HealthConnectClient? _healthConnectClient;
 
-	static readonly string[] scopes = { FitnessService.Scope.FitnessActivityRead, FitnessService.Scope.FitnessBodyRead };
-	const string applicationName = "Your Application Name";
-	const string credentialFilePath = "credentials.json";
+	readonly SemaphoreSlim semaphore = new(1, 1);
 
-	public Task<bool> CheckPermissionAsync(HealthParameter healthParameter, PermissionType permissionType)
+	/// <summary>
+	/// Maps each <see cref="HealthParameter"/> to the corresponding Android Health Connect record type.
+	/// Parameters marked with a comment are not natively supported by Health Connect and will throw
+	/// <see cref="HealthException"/> at runtime.
+	/// </summary>
+	static readonly Dictionary<HealthParameter, Type> healthParameterToRecordType = new()
 	{
-		throw new NotImplementedException();
+		{ HealthParameter.StepCount,                    typeof(StepsRecord) },
+		{ HealthParameter.HeartRate,                    typeof(HeartRateRecord) },
+		{ HealthParameter.RestingHeartRate,             typeof(RestingHeartRateRecord) },
+		{ HealthParameter.BodyMass,                     typeof(WeightRecord) },
+		{ HealthParameter.Height,                       typeof(HeightRecord) },
+		{ HealthParameter.BodyFatPercentage,            typeof(BodyFatRecord) },
+		{ HealthParameter.BodyMassIndex,                typeof(BodyMassIndexRecord) },
+		{ HealthParameter.LeanBodyMass,                 typeof(LeanBodyMassRecord) },
+		{ HealthParameter.WaistCircumference,           typeof(WaistCircumferenceRecord) },
+		{ HealthParameter.ActiveEnergyBurned,           typeof(ActiveCaloriesBurnedRecord) },
+		{ HealthParameter.BasalEnergyBurned,            typeof(BasalMetabolicRateRecord) },
+		{ HealthParameter.OxygenSaturation,             typeof(OxygenSaturationRecord) },
+		{ HealthParameter.BloodGlucose,                 typeof(BloodGlucoseRecord) },
+		{ HealthParameter.BloodPressureSystolic,        typeof(BloodPressureRecord) },
+		{ HealthParameter.BloodPressureDiastolic,       typeof(BloodPressureRecord) },
+		{ HealthParameter.BodyTemperature,              typeof(BodyTemperatureRecord) },
+		{ HealthParameter.BasalBodyTemperature,         typeof(BasalBodyTemperatureRecord) },
+		{ HealthParameter.RespiratoryRate,              typeof(RespiratoryRateRecord) },
+		{ HealthParameter.VO2Max,                       typeof(Vo2MaxRecord) },
+		{ HealthParameter.FlightsClimbed,               typeof(FloorsClimbedRecord) },
+		{ HealthParameter.DistanceWalkingRunning,       typeof(DistanceRecord) },
+		{ HealthParameter.DistanceCycling,              typeof(DistanceRecord) },
+		{ HealthParameter.DistanceSwimming,             typeof(DistanceRecord) },
+		{ HealthParameter.DistanceWheelchair,           typeof(DistanceRecord) },
+		{ HealthParameter.ExerciseTime,                 typeof(ExerciseSessionRecord) },
+		{ HealthParameter.HeartRateVariabilitySdnn,     typeof(HeartRateVariabilityRmssdRecord) },
+		{ HealthParameter.SwimmingStrokeCount,          typeof(SwimmingStrokesRecord) },
+		{ HealthParameter.DietaryCalcium,               typeof(NutritionRecord) },
+		{ HealthParameter.DietaryCarbohydrates,         typeof(NutritionRecord) },
+		{ HealthParameter.DietaryCholesterol,           typeof(NutritionRecord) },
+		{ HealthParameter.DietaryEnergyConsumed,        typeof(NutritionRecord) },
+		{ HealthParameter.DietaryFatMonounsaturated,    typeof(NutritionRecord) },
+		{ HealthParameter.DietaryFatPolyunsaturated,    typeof(NutritionRecord) },
+		{ HealthParameter.DietaryFatSaturated,          typeof(NutritionRecord) },
+		{ HealthParameter.DietaryFatTotal,              typeof(NutritionRecord) },
+		{ HealthParameter.DietaryFiber,                 typeof(NutritionRecord) },
+		{ HealthParameter.DietaryFolate,                typeof(NutritionRecord) },
+		{ HealthParameter.DietaryIron,                  typeof(NutritionRecord) },
+		{ HealthParameter.DietaryMagnesium,             typeof(NutritionRecord) },
+		{ HealthParameter.DietaryPhosphorus,            typeof(NutritionRecord) },
+		{ HealthParameter.DietaryPotassium,             typeof(NutritionRecord) },
+		{ HealthParameter.DietaryProtein,               typeof(NutritionRecord) },
+		{ HealthParameter.DietarySodium,                typeof(NutritionRecord) },
+		{ HealthParameter.DietarySugar,                 typeof(NutritionRecord) },
+		{ HealthParameter.DietaryVitaminA,              typeof(NutritionRecord) },
+		{ HealthParameter.DietaryVitaminB6,             typeof(NutritionRecord) },
+		{ HealthParameter.DietaryVitaminB12,            typeof(NutritionRecord) },
+		{ HealthParameter.DietaryVitaminC,              typeof(NutritionRecord) },
+		{ HealthParameter.DietaryVitaminD,              typeof(NutritionRecord) },
+		{ HealthParameter.DietaryVitaminE,              typeof(NutritionRecord) },
+		{ HealthParameter.DietaryVitaminK,              typeof(NutritionRecord) },
+		{ HealthParameter.DietaryZinc,                  typeof(NutritionRecord) },
+		{ HealthParameter.DietaryWater,                 typeof(HydrationRecord) },
+		{ HealthParameter.DietaryCaffeine,              typeof(NutritionRecord) },
+		{ HealthParameter.DietaryBiotin,                typeof(NutritionRecord) },
+		{ HealthParameter.DietaryChloride,              typeof(NutritionRecord) },
+		{ HealthParameter.DietaryChromium,              typeof(NutritionRecord) },
+		{ HealthParameter.DietaryCopper,                typeof(NutritionRecord) },
+		{ HealthParameter.DietaryIodine,                typeof(NutritionRecord) },
+		{ HealthParameter.DietaryManganese,             typeof(NutritionRecord) },
+		{ HealthParameter.DietaryMolybdenum,            typeof(NutritionRecord) },
+		{ HealthParameter.DietaryNiacin,                typeof(NutritionRecord) },
+		{ HealthParameter.DietaryPantothenicAcid,       typeof(NutritionRecord) },
+		{ HealthParameter.DietaryRiboflavin,            typeof(NutritionRecord) },
+		{ HealthParameter.DietarySelenium,              typeof(NutritionRecord) },
+		{ HealthParameter.DietaryThiamin,               typeof(NutritionRecord) },
+	};
+
+	/// <summary>
+	/// Maps <see cref="WorkoutType"/> to the Health Connect integer exercise type constants defined on
+	/// <see cref="ExerciseSessionRecord"/>.
+	/// </summary>
+	static readonly Dictionary<WorkoutType, int> workoutTypeToExerciseType = new()
+	{
+		{ WorkoutType.Running,                      ExerciseSessionRecord.ExerciseTypeRunning },
+		{ WorkoutType.Walking,                      ExerciseSessionRecord.ExerciseTypeWalking },
+		{ WorkoutType.Cycling,                      ExerciseSessionRecord.ExerciseTypeBiking },
+		{ WorkoutType.Swimming,                     ExerciseSessionRecord.ExerciseTypeSwimmingOpenWater },
+		{ WorkoutType.Hiking,                       ExerciseSessionRecord.ExerciseTypeHiking },
+		{ WorkoutType.Yoga,                         ExerciseSessionRecord.ExerciseTypeYoga },
+		{ WorkoutType.HighIntensityIntervalTraining, ExerciseSessionRecord.ExerciseTypeHighIntensityIntervalTraining },
+		{ WorkoutType.TraditionalStrengthTraining,   ExerciseSessionRecord.ExerciseTypeStrengthTraining },
+		{ WorkoutType.FunctionalStrengthTraining,    ExerciseSessionRecord.ExerciseTypeStrengthTraining },
+		{ WorkoutType.CrossTraining,                ExerciseSessionRecord.ExerciseTypeCrossTraining },
+		{ WorkoutType.Elliptical,                   ExerciseSessionRecord.ExerciseTypeElliptical },
+		{ WorkoutType.Rowing,                       ExerciseSessionRecord.ExerciseTypeRowing },
+		{ WorkoutType.StairClimbing,                ExerciseSessionRecord.ExerciseTypeStairClimbing },
+		{ WorkoutType.Stairs,                       ExerciseSessionRecord.ExerciseTypeStairClimbing },
+		{ WorkoutType.Dance,                        ExerciseSessionRecord.ExerciseTypeDancing },
+		{ WorkoutType.DanceInspiredTraining,        ExerciseSessionRecord.ExerciseTypeDancing },
+		{ WorkoutType.Soccer,                       ExerciseSessionRecord.ExerciseTypeFootball },
+		{ WorkoutType.Basketball,                   ExerciseSessionRecord.ExerciseTypeBasketball },
+		{ WorkoutType.Baseball,                     ExerciseSessionRecord.ExerciseTypeBaseball },
+		{ WorkoutType.Tennis,                       ExerciseSessionRecord.ExerciseTypeTennis },
+		{ WorkoutType.Volleyball,                   ExerciseSessionRecord.ExerciseTypeVolleyball },
+		{ WorkoutType.Golf,                         ExerciseSessionRecord.ExerciseTypeGolf },
+		{ WorkoutType.Boxing,                       ExerciseSessionRecord.ExerciseTypeBoxing },
+		{ WorkoutType.MartialArts,                  ExerciseSessionRecord.ExerciseTypeMartialArts },
+		{ WorkoutType.Badminton,                    ExerciseSessionRecord.ExerciseTypeBadminton },
+		{ WorkoutType.Squash,                       ExerciseSessionRecord.ExerciseTypeSquash },
+		{ WorkoutType.TableTennis,                  ExerciseSessionRecord.ExerciseTypeTableTennis },
+		{ WorkoutType.Climbing,                     ExerciseSessionRecord.ExerciseTypeRockClimbing },
+		{ WorkoutType.Snowboarding,                 ExerciseSessionRecord.ExerciseTypeSnowboarding },
+		{ WorkoutType.DownhillSkiing,               ExerciseSessionRecord.ExerciseTypeSkiing },
+		{ WorkoutType.CrossCountrySkiing,           ExerciseSessionRecord.ExerciseTypeSkiing },
+		{ WorkoutType.Pilates,                      ExerciseSessionRecord.ExerciseTypePilates },
+		{ WorkoutType.Gymnastics,                   ExerciseSessionRecord.ExerciseTypeGymnastics },
+		{ WorkoutType.MindAndBody,                  ExerciseSessionRecord.ExerciseTypeMindfulness },
+		{ WorkoutType.JumpRope,                     ExerciseSessionRecord.ExerciseTypeJumpRope },
+		{ WorkoutType.Kickboxing,                   ExerciseSessionRecord.ExerciseTypeKickboxing },
+		{ WorkoutType.Barre,                        ExerciseSessionRecord.ExerciseTypeBarre },
+		{ WorkoutType.CoreTraining,                 ExerciseSessionRecord.ExerciseTypeExerciseClass },
+		{ WorkoutType.WaterFitness,                 ExerciseSessionRecord.ExerciseTypeWaterPolo },
+		{ WorkoutType.SurfingSports,                ExerciseSessionRecord.ExerciseTypeSurfing },
+		{ WorkoutType.PaddleSports,                 ExerciseSessionRecord.ExerciseTypePaddling },
+		{ WorkoutType.Sailing,                      ExerciseSessionRecord.ExerciseTypeSailing },
+		{ WorkoutType.Handball,                     ExerciseSessionRecord.ExerciseTypeHandball },
+		{ WorkoutType.Rugby,                        ExerciseSessionRecord.ExerciseTypeRugby },
+		{ WorkoutType.Hockey,                       ExerciseSessionRecord.ExerciseTypeIceHockey },
+		{ WorkoutType.AmericanFootball,             ExerciseSessionRecord.ExerciseTypeAmericanFootball },
+		{ WorkoutType.AustralianFootball,           ExerciseSessionRecord.ExerciseTypeAustralianFootball },
+		{ WorkoutType.Cricket,                      ExerciseSessionRecord.ExerciseTypeCricket },
+		{ WorkoutType.Lacrosse,                     ExerciseSessionRecord.ExerciseTypeLacrosse },
+		{ WorkoutType.Softball,                     ExerciseSessionRecord.ExerciseTypeSoftball },
+		{ WorkoutType.Racquetball,                  ExerciseSessionRecord.ExerciseTypeRacquetball },
+		{ WorkoutType.TrackAndField,                ExerciseSessionRecord.ExerciseTypeRunning },
+		{ WorkoutType.SwimBikeRun,                  ExerciseSessionRecord.ExerciseTypeSwimmingOpenWater },
+		{ WorkoutType.Other,                        ExerciseSessionRecord.ExerciseTypeOther },
+	};
+
+	/// <summary>Reverse mapping: Health Connect exercise-type int → <see cref="WorkoutType"/>.</summary>
+	static readonly Dictionary<int, WorkoutType> exerciseTypeToWorkoutType =
+		workoutTypeToExerciseType
+			.GroupBy(kv => kv.Value)
+			.ToDictionary(g => g.Key, g => g.First().Key);
+
+	HealthConnectClient GetClient()
+	{
+		_healthConnectClient ??= HealthConnectClient.GetOrCreate(Platform.AppContext);
+		return _healthConnectClient;
 	}
 
+	/// <summary>
+	/// Returns <see langword="true"/> when the Android Health Connect SDK is installed and available
+	/// on the current device.
+	/// </summary>
+	public bool IsSupported =>
+		HealthConnectClient.GetSdkStatus(Platform.AppContext) == HealthConnectClient.SdkAvailable;
+
+	// ────────────────────────────────────────────────────────────────────────────
+	// Permissions
+	// ────────────────────────────────────────────────────────────────────────────
+
+	/// <summary>
+	/// Checks whether the required Health Connect permissions have already been granted for
+	/// <paramref name="healthParameter"/>.  To actually request permissions from the user the
+	/// host application must launch the Health Connect permission activity using
+	/// <c>HealthConnectClient.PermissionController.CreateRequestPermissionResultContract()</c>.
+	/// </summary>
+	public async Task<bool> CheckPermissionAsync(HealthParameter healthParameter, PermissionType permissionType)
+	{
+		if (!IsSupported)
+			throw new HealthException("Android Health Connect is not available on this device. Ensure Health Connect is installed and the SDK is available.");
+
+		if (!healthParameterToRecordType.TryGetValue(healthParameter, out var recordType))
+			throw new HealthException($"{healthParameter} is not supported on Android Health Connect.");
+
+		try
+		{
+			var client = GetClient();
+			var granted = await client.PermissionController.GetGrantedPermissions();
+
+			if (permissionType.HasFlag(PermissionType.Read))
+			{
+				var readPermission = HealthPermission.GetReadPermission(Java.Lang.Class.FromType(recordType));
+				if (!granted.Contains(readPermission))
+					throw new HealthException($"Read permission for {healthParameter} has not been granted. Request it using HealthConnectClient.PermissionController.");
+			}
+
+			if (permissionType.HasFlag(PermissionType.Write))
+			{
+				var writePermission = HealthPermission.GetWritePermission(Java.Lang.Class.FromType(recordType));
+				if (!granted.Contains(writePermission))
+					throw new HealthException($"Write permission for {healthParameter} has not been granted. Request it using HealthConnectClient.PermissionController.");
+			}
+
+			return true;
+		}
+		catch (HealthException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			throw new HealthException(ex.Message, ex);
+		}
+	}
+
+	// ────────────────────────────────────────────────────────────────────────────
+	// Helpers
+	// ────────────────────────────────────────────────────────────────────────────
+
+	static Instant ToInstant(DateTime dateTime) =>
+		Instant.OfEpochMilli(new DateTimeOffset(dateTime.ToUniversalTime()).ToUnixTimeMilliseconds());
+
+	static TimeRangeFilter BuildTimeRange(DateTime from, DateTime until) =>
+		TimeRangeFilter.Between(ToInstant(from), ToInstant(until));
+
+	static DateTime FromInstant(Instant instant) =>
+		DateTimeOffset.FromUnixTimeMilliseconds(instant.ToEpochMilli()).UtcDateTime;
+
+	/// <summary>
+	/// Extracts the numeric value from a Health Connect record that is relevant for the requested
+	/// <paramref name="healthParameter"/>.  Returns <see langword="null"/> for record types where
+	/// a single scalar cannot be determined (e.g. blood pressure — query each component separately).
+	/// </summary>
+	static double? ExtractValue(IRecord record, HealthParameter healthParameter)
+	{
+		return record switch
+		{
+			StepsRecord r                       => r.Count,
+			WeightRecord r                      => r.Weight.InKilograms,
+			HeightRecord r                      => r.Height.InMeters,
+			BodyFatRecord r                     => r.Percentage.Value,
+			LeanBodyMassRecord r                => r.Mass.InKilograms,
+			BoneMassRecord r                    => r.Mass.InKilograms,
+			BodyMassIndexRecord r               => r.Bmi,
+			WaistCircumferenceRecord r          => r.Circumference.InMeters,
+			ActiveCaloriesBurnedRecord r        => r.Energy.InCalories,
+			BasalMetabolicRateRecord r          => r.BasalMetabolicRate.InWatts,
+			OxygenSaturationRecord r            => r.Percentage.Value,
+			BloodGlucoseRecord r                => r.Level.InMillimolesPerLiter,
+			BloodPressureRecord r when healthParameter == HealthParameter.BloodPressureSystolic
+											    => r.Systolic.InMillimetersOfMercury,
+			BloodPressureRecord r               => r.Diastolic.InMillimetersOfMercury,
+			BodyTemperatureRecord r             => r.Temperature.InCelsius,
+			BasalBodyTemperatureRecord r        => r.Temperature.InCelsius,
+			RespiratoryRateRecord r             => r.Rate,
+			Vo2MaxRecord r                      => r.Vo2MillilitersPerMinuteKilogram,
+			FloorsClimbedRecord r               => r.Floors,
+			DistanceRecord r                    => r.Distance.InMeters,
+			HeartRateRecord r                   => r.Samples?.Count > 0 ? r.Samples[0].BeatsPerMinute : (double?)null,
+			RestingHeartRateRecord r            => r.BeatsPerMinute,
+			HeartRateVariabilityRmssdRecord r   => r.HeartRateVariabilityMillis,
+			SwimmingStrokesRecord r             => r.Count,
+			HydrationRecord r                   => r.Volume.InMilliliters,
+			ExerciseSessionRecord r             => (r.EndTime.ToEpochMilli() - r.StartTime.ToEpochMilli()) / 1000.0,
+			NutritionRecord r                   => ExtractNutritionValue(r, healthParameter),
+			_                                   => null,
+		};
+	}
+
+	static double? ExtractNutritionValue(NutritionRecord r, HealthParameter hp) => hp switch
+	{
+		HealthParameter.DietaryEnergyConsumed        => r.Energy?.InCalories,
+		HealthParameter.DietaryProtein               => r.Protein?.InGrams,
+		HealthParameter.DietaryCarbohydrates         => r.TotalCarbohydrate?.InGrams,
+		HealthParameter.DietaryFatTotal              => r.TotalFat?.InGrams,
+		HealthParameter.DietaryFatSaturated          => r.SaturatedFat?.InGrams,
+		HealthParameter.DietaryFatPolyunsaturated    => r.PolyunsaturatedFat?.InGrams,
+		HealthParameter.DietaryFatMonounsaturated    => r.MonounsaturatedFat?.InGrams,
+		HealthParameter.DietaryFiber                 => r.DietaryFiber?.InGrams,
+		HealthParameter.DietarySugar                 => r.Sugar?.InGrams,
+		HealthParameter.DietaryCholesterol           => r.Cholesterol?.InGrams,
+		HealthParameter.DietarySodium                => r.Sodium?.InGrams,
+		HealthParameter.DietaryPotassium             => r.Potassium?.InGrams,
+		HealthParameter.DietaryCalcium               => r.Calcium?.InGrams,
+		HealthParameter.DietaryIron                  => r.Iron?.InGrams,
+		HealthParameter.DietaryVitaminA              => r.VitaminA?.InGrams,
+		HealthParameter.DietaryVitaminB6             => r.VitaminB6?.InGrams,
+		HealthParameter.DietaryVitaminB12            => r.VitaminB12?.InGrams,
+		HealthParameter.DietaryVitaminC              => r.VitaminC?.InGrams,
+		HealthParameter.DietaryVitaminD              => r.VitaminD?.InGrams,
+		HealthParameter.DietaryVitaminE              => r.VitaminE?.InGrams,
+		HealthParameter.DietaryVitaminK              => r.VitaminK?.InGrams,
+		HealthParameter.DietaryZinc                  => r.Zinc?.InGrams,
+		HealthParameter.DietaryMagnesium             => r.Magnesium?.InGrams,
+		HealthParameter.DietaryPhosphorus            => r.Phosphorus?.InGrams,
+		HealthParameter.DietaryFolate                => r.Folate?.InGrams,
+		HealthParameter.DietaryBiotin                => r.Biotin?.InGrams,
+		HealthParameter.DietaryChloride              => r.Chloride?.InGrams,
+		HealthParameter.DietaryChromium              => r.Chromium?.InGrams,
+		HealthParameter.DietaryCopper                => r.Copper?.InGrams,
+		HealthParameter.DietaryIodine                => r.Iodine?.InGrams,
+		HealthParameter.DietaryManganese             => r.Manganese?.InGrams,
+		HealthParameter.DietaryMolybdenum            => r.Molybdenum?.InGrams,
+		HealthParameter.DietaryNiacin                => r.Niacin?.InGrams,
+		HealthParameter.DietaryPantothenicAcid       => r.PantothenicAcid?.InGrams,
+		HealthParameter.DietaryRiboflavin            => r.Riboflavin?.InGrams,
+		HealthParameter.DietarySelenium              => r.Selenium?.InGrams,
+		HealthParameter.DietaryThiamin               => r.Thiamin?.InGrams,
+		HealthParameter.DietaryCaffeine              => r.Caffeine?.InGrams,
+		_                                            => null,
+	};
+
+	static DateTime? GetRecordStartTime(IRecord record)
+	{
+		var startTimeProp = record.GetType().GetProperty("StartTime");
+		if (startTimeProp?.GetValue(record) is Instant startInstant)
+			return FromInstant(startInstant);
+		var timeProp = record.GetType().GetProperty("Time");
+		if (timeProp?.GetValue(record) is Instant timeInstant)
+			return FromInstant(timeInstant);
+		return null;
+	}
+
+	static DateTime? GetRecordEndTime(IRecord record)
+	{
+		var endTimeProp = record.GetType().GetProperty("EndTime");
+		if (endTimeProp?.GetValue(record) is Instant endInstant)
+			return FromInstant(endInstant);
+		var timeProp = record.GetType().GetProperty("Time");
+		if (timeProp?.GetValue(record) is Instant timeInstant)
+			return FromInstant(timeInstant);
+		return null;
+	}
+
+	static string GetRecordSource(IRecord record) =>
+		record.Metadata?.DataOrigin?.PackageName ?? string.Empty;
+
+	// ────────────────────────────────────────────────────────────────────────────
+	// Read operations
+	// ────────────────────────────────────────────────────────────────────────────
+
+	/// <inheritdoc/>
 	public async Task<List<Sample>> ReadAllAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
 	{
-		UserCredential credential;
-
-		using (var stream = new FileStream(credentialFilePath, FileMode.Open, FileAccess.Read))
+		await semaphore.WaitAsync();
+		try
 		{
-			// The file token.json stores the user's access and refresh tokens and is created automatically when the authorization flow completes for the first time.
-			var credPath = "token.json";
-			credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
-				GoogleClientSecrets.Load(stream).Secrets,
-				scopes,
-				"user",
-				CancellationToken.None,
-				new FileDataStore(credPath, true));
-			Console.WriteLine("Credential file saved to: " + credPath);
+			if (!IsSupported)
+				throw new HealthException("Android Health Connect is not available on this device.");
+
+			if (!healthParameterToRecordType.TryGetValue(healthParameter, out var recordType))
+				throw new HealthException($"{healthParameter} is not supported on Android Health Connect.");
+
+			var client = GetClient();
+			var request = new ReadRecordsRequest(
+				Java.Lang.Class.FromType(recordType),
+				BuildTimeRange(from, until));
+
+			var response = await client.ReadRecords(request);
+			var results = new List<Sample>();
+
+			foreach (var record in response.Records)
+			{
+				var value = ExtractValue(record, healthParameter);
+				if (value is null)
+					continue;
+
+				results.Add(new Sample(
+					from: GetRecordStartTime(record),
+					until: GetRecordEndTime(record),
+					value: value,
+					source: GetRecordSource(record),
+					unit: unit));
+			}
+
+			return results;
+		}
+		catch (HealthException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			throw new HealthException(ex.Message, ex);
+		}
+		finally
+		{
+			semaphore.Release();
+		}
+	}
+
+	/// <inheritdoc/>
+	public async Task<double> ReadCountAsync(HealthParameter healthParameter, DateTime from, DateTime until)
+	{
+		var samples = await ReadAllAsync(healthParameter, from, until, string.Empty);
+		return samples.Sum(s => s.Value ?? 0d);
+	}
+
+	/// <inheritdoc/>
+	public async Task<double?> ReadLatestAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
+	{
+		await semaphore.WaitAsync();
+		try
+		{
+			if (!IsSupported)
+				throw new HealthException("Android Health Connect is not available on this device.");
+
+			if (!healthParameterToRecordType.TryGetValue(healthParameter, out var recordType))
+				throw new HealthException($"{healthParameter} is not supported on Android Health Connect.");
+
+			var client = GetClient();
+			var request = new ReadRecordsRequest(
+				Java.Lang.Class.FromType(recordType),
+				BuildTimeRange(from, until),
+				ascendingOrder: false,
+				pageSize: 1);
+
+			var response = await client.ReadRecords(request);
+			var record = response.Records.FirstOrDefault();
+			return record is null ? null : ExtractValue(record, healthParameter);
+		}
+		catch (HealthException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			throw new HealthException(ex.Message, ex);
+		}
+		finally
+		{
+			semaphore.Release();
+		}
+	}
+
+	/// <inheritdoc/>
+	public async Task<Sample?> ReadLatestAvailableAsync(HealthParameter healthParameter, string unit)
+	{
+		await semaphore.WaitAsync();
+		try
+		{
+			if (!IsSupported)
+				throw new HealthException("Android Health Connect is not available on this device.");
+
+			if (!healthParameterToRecordType.TryGetValue(healthParameter, out var recordType))
+				throw new HealthException($"{healthParameter} is not supported on Android Health Connect.");
+
+			var client = GetClient();
+			// Use an unbounded time range (epoch → now) sorted descending to get the most recent record.
+			var request = new ReadRecordsRequest(
+				Java.Lang.Class.FromType(recordType),
+				TimeRangeFilter.Before(ToInstant(DateTime.UtcNow)),
+				ascendingOrder: false,
+				pageSize: 1);
+
+			var response = await client.ReadRecords(request);
+			var record = response.Records.FirstOrDefault();
+			if (record is null)
+				return null;
+
+			var value = ExtractValue(record, healthParameter);
+			return value is null ? null : new Sample(
+				from: GetRecordStartTime(record),
+				until: GetRecordEndTime(record),
+				value: value,
+				source: GetRecordSource(record),
+				unit: unit);
+		}
+		catch (HealthException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			throw new HealthException(ex.Message, ex);
+		}
+		finally
+		{
+			semaphore.Release();
+		}
+	}
+
+	/// <inheritdoc/>
+	public async Task<double?> ReadAverageAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
+	{
+		try
+		{
+			var samples = await ReadAllAsync(healthParameter, from, until, unit);
+			return samples.Count == 0 ? null : samples.Average(s => s.Value);
+		}
+		catch (HealthException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			throw new HealthException(ex.Message, ex);
+		}
+	}
+
+	/// <inheritdoc/>
+	public async Task<double?> ReadMinAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
+	{
+		try
+		{
+			var samples = await ReadAllAsync(healthParameter, from, until, unit);
+			return samples.Count == 0 ? null : samples.Min(s => s.Value);
+		}
+		catch (HealthException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			throw new HealthException(ex.Message, ex);
+		}
+	}
+
+	/// <inheritdoc/>
+	public async Task<double?> ReadMaxAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
+	{
+		try
+		{
+			var samples = await ReadAllAsync(healthParameter, from, until, unit);
+			return samples.Count == 0 ? null : samples.Max(s => s.Value);
+		}
+		catch (HealthException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			throw new HealthException(ex.Message, ex);
+		}
+	}
+
+	// ────────────────────────────────────────────────────────────────────────────
+	// Write operations
+	// ────────────────────────────────────────────────────────────────────────────
+
+	/// <inheritdoc/>
+	public async Task<bool> WriteAsync(HealthParameter healthParameter, DateTime? date, double valueToStore, string unit)
+	{
+		await semaphore.WaitAsync();
+		try
+		{
+			if (!IsSupported)
+				throw new HealthException("Android Health Connect is not available on this device.");
+
+			if (!healthParameterToRecordType.TryGetValue(healthParameter, out var recordType))
+				throw new HealthException($"{healthParameter} is not supported on Android Health Connect.");
+
+			var timestamp = date ?? DateTime.UtcNow;
+			var instant = ToInstant(timestamp);
+			var client = GetClient();
+
+			Record record = BuildWriteRecord(healthParameter, recordType, valueToStore, instant);
+			await client.InsertRecords(new Java.Util.ArrayList { record });
+			return true;
+		}
+		catch (HealthException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			throw new HealthException(ex.Message, ex);
+		}
+		finally
+		{
+			semaphore.Release();
+		}
+	}
+
+	static IRecord BuildWriteRecord(HealthParameter hp, Type recordType, double value, Instant instant)
+	{
+		var metadata = new Metadata(
+			clientRecordId: null,
+			dataOrigin: new DataOrigin(Platform.AppContext.PackageName),
+			lastModifiedTime: instant,
+			clientRecordVersion: 0,
+			device: null,
+			recordingMethod: Metadata.RecordingMethodManualEntry);
+
+		if (recordType == typeof(StepsRecord))
+			return new StepsRecord(instant, instant, (long)value, metadata);
+
+		if (recordType == typeof(WeightRecord))
+			return new WeightRecord(instant, Mass.Kilograms(value), metadata);
+
+		if (recordType == typeof(HeightRecord))
+			return new HeightRecord(instant, Length.Meters(value), metadata);
+
+		if (recordType == typeof(HeartRateRecord))
+		{
+			var sample = new HeartRateRecord.Sample(instant, (long)value);
+			return new HeartRateRecord(instant, instant, new[] { sample }, metadata);
 		}
 
-		var service = new FitnessService(new BaseClientService.Initializer()
-		{
-			HttpClientInitializer = credential,
-			ApplicationName = applicationName,
-		});
+		if (recordType == typeof(ActiveCaloriesBurnedRecord))
+			return new ActiveCaloriesBurnedRecord(instant, instant, Energy.Calories(value), metadata);
 
-		// Define parameters of the request.
-		string dataSourceId = "derived:com.google.step_count.delta:com.google.android.gms:estimated_steps";
-		var today = DateTime.Today;
-		var now = DateTime.Now;
-		var startTime = new DateTimeOffset(today).ToUnixTimeSeconds() * 1000000000;
-		var endTime = new DateTimeOffset(now).ToUnixTimeSeconds() * 1000000000;
-		var dataSetId = $"{startTime}-{endTime}";
+		if (recordType == typeof(OxygenSaturationRecord))
+			return new OxygenSaturationRecord(instant, Percentage.Value(value), metadata);
 
-		// Fetch dataset.
-		var request = service.Users.DataSources.Datasets.Get("me", dataSourceId, dataSetId);
-		var dataset = await request.ExecuteAsync();
+		if (recordType == typeof(BloodGlucoseRecord))
+			return new BloodGlucoseRecord(
+				instant,
+				BloodGlucoseRecord.SpecimenSourceCapillaryBlood,
+				BloodGlucose.MillimolesPerLiter(value),
+				BloodGlucoseRecord.RelationToMealUnknown,
+				BloodGlucoseRecord.MealTypeUnknown,
+				metadata);
 
-		ProcessDataset(dataset);
+		if (recordType == typeof(BloodPressureRecord))
+			throw new HealthException(
+				"Writing blood pressure requires both systolic and diastolic values. " +
+				"Use a dedicated blood pressure write method that accepts both components.");
 
-		return new List<Sample>();
+		if (recordType == typeof(BodyTemperatureRecord))
+			return new BodyTemperatureRecord(
+				instant,
+				BodyTemperatureRecord.MeasurementLocationUnknown,
+				Temperature.Celsius(value),
+				metadata);
+
+		if (recordType == typeof(RespiratoryRateRecord))
+			return new RespiratoryRateRecord(instant, value, metadata);
+
+		if (recordType == typeof(DistanceRecord))
+			return new DistanceRecord(instant, instant, Length.Meters(value), metadata);
+
+		if (recordType == typeof(FloorsClimbedRecord))
+			return new FloorsClimbedRecord(instant, instant, value, metadata);
+
+		if (recordType == typeof(RestingHeartRateRecord))
+			return new RestingHeartRateRecord(instant, (long)value, metadata);
+
+		if (recordType == typeof(BodyFatRecord))
+			return new BodyFatRecord(instant, Percentage.Value(value), metadata);
+
+		if (recordType == typeof(LeanBodyMassRecord))
+			return new LeanBodyMassRecord(instant, Mass.Kilograms(value), metadata);
+
+		if (recordType == typeof(WaistCircumferenceRecord))
+			return new WaistCircumferenceRecord(instant, Length.Meters(value), metadata);
+
+		if (recordType == typeof(Vo2MaxRecord))
+			return new Vo2MaxRecord(instant, value, Vo2MaxRecord.MeasurementMethodOther, metadata);
+
+		if (recordType == typeof(HydrationRecord))
+			return new HydrationRecord(instant, instant, Volume.Milliliters(value), metadata);
+
+		throw new HealthException($"Writing records of type {recordType.Name} is not supported.");
 	}
 
-	static void ProcessDataset(Dataset dataset)
+	// ────────────────────────────────────────────────────────────────────────────
+	// Workout operations
+	// ────────────────────────────────────────────────────────────────────────────
+
+	/// <summary>
+	/// Reads all workouts of <paramref name="workoutType"/> that fall within the given date range.
+	/// GPS route data is included when it was recorded and is available in the Health Connect store.
+	/// </summary>
+	public async Task<List<Workout>> ReadAllWorkoutsAsync(WorkoutType workoutType, DateTime from, DateTime until)
 	{
-		var starts = new List<long>();
-		var ends = new List<long>();
-		var values = new List<int>();
-
-		foreach (var point in dataset.Point)
+		await semaphore.WaitAsync();
+		try
 		{
-			long startTimeNs = point.StartTimeNanos.Value;
-			long endTimeNs = point.EndTimeNanos.Value;
+			if (!IsSupported)
+				throw new HealthException("Android Health Connect is not available on this device.");
 
-			starts.Add(startTimeNs);
-			ends.Add(endTimeNs);
-			values.Add(point.Value[0].IntVal.Value);
+			var client = GetClient();
+			var request = new ReadRecordsRequest(
+				Java.Lang.Class.FromType(typeof(ExerciseSessionRecord)),
+				BuildTimeRange(from, until));
+
+			var response = await client.ReadRecords(request);
+			var workouts = new List<Workout>();
+
+			foreach (var record in response.Records.OfType<ExerciseSessionRecord>())
+			{
+				var recordExerciseType = record.ExerciseType;
+
+				// Filter to requested workout type, or include everything if WorkoutType.Other is requested.
+				if (workoutType != WorkoutType.Other)
+				{
+					if (!workoutTypeToExerciseType.TryGetValue(workoutType, out var expectedType))
+						continue;
+					if (recordExerciseType != expectedType)
+						continue;
+				}
+
+				exerciseTypeToWorkoutType.TryGetValue(recordExerciseType, out var mappedType);
+
+				var startTime = FromInstant(record.StartTime);
+				var endTime = FromInstant(record.EndTime);
+				var durationSeconds = (endTime - startTime).TotalSeconds;
+
+				double? calories = null;
+				if (record.ExerciseType > 0)
+				{
+					// Attempt to read calories for this session from ActiveCaloriesBurnedRecord
+					var calorieRequest = new ReadRecordsRequest(
+						Java.Lang.Class.FromType(typeof(ActiveCaloriesBurnedRecord)),
+						BuildTimeRange(startTime, endTime));
+					var calorieResponse = await client.ReadRecords(calorieRequest);
+					calories = calorieResponse.Records.OfType<ActiveCaloriesBurnedRecord>()
+						.Sum(r => r.Energy.InCalories);
+					if (calories == 0)
+						calories = null;
+				}
+
+				double? distance = null;
+				var distanceRequest = new ReadRecordsRequest(
+					Java.Lang.Class.FromType(typeof(DistanceRecord)),
+					BuildTimeRange(startTime, endTime));
+				var distanceResponse = await client.ReadRecords(distanceRequest);
+				var totalDistance = distanceResponse.Records.OfType<DistanceRecord>().Sum(r => r.Distance.InMeters);
+				if (totalDistance > 0)
+					distance = totalDistance;
+
+				// Extract GPS route when available.
+				// ExerciseRoute.Location carries latitude, longitude, and an optional altitude (Length).
+				List<WorkoutCoordinate>? route = null;
+				if (record.Route?.Locations is { Count: > 0 } locations)
+				{
+					route = locations
+						.Select(loc => new WorkoutCoordinate(
+							timestamp: DateTimeOffset.FromUnixTimeMilliseconds(loc.Time.ToEpochMilli()).UtcDateTime,
+							latitude: loc.Latitude,
+							longitude: loc.Longitude,
+							altitude: loc.Altitude?.InMeters))
+						.ToList();
+				}
+
+				var source = GetRecordSource(record);
+				workouts.Add(new Workout(
+					workoutType: mappedType,
+					from: startTime,
+					until: endTime,
+					durationInSeconds: durationSeconds,
+					energyBurnedInCalorie: calories,
+					totalDistanceInMeter: distance,
+					source: source,
+					route: route));
+			}
+
+			return workouts;
 		}
-
-		// Additional processing and output as needed.
+		catch (HealthException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			throw new HealthException(ex.Message, ex);
+		}
+		finally
+		{
+			semaphore.Release();
+		}
 	}
 
-	public Task<double?> ReadAverageAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
+	/// <summary>
+	/// Returns the most recent workout of <paramref name="workoutType"/> in the given date range,
+	/// including GPS route data when available.
+	/// </summary>
+	public async Task<Workout?> ReadLatestWorkoutAsync(WorkoutType workoutType, DateTime from, DateTime until)
 	{
-		throw new NotImplementedException();
-	}
-
-	public Task<double> ReadCountAsync(HealthParameter healthParameter, DateTime from, DateTime until)
-	{
-		throw new NotImplementedException();
-	}
-
-	public Task<double?> ReadLatestAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
-	{
-		throw new NotImplementedException();
-	}
-
-	public Task<Sample?> ReadLatestAvailableAsync(HealthParameter healthParameter, string unit)
-	{
-		throw new NotImplementedException();
-	}
-
-	public Task<double?> ReadMaxAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
-	{
-		throw new NotImplementedException();
-	}
-
-	public Task<double?> ReadMinAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
-	{
-		throw new NotImplementedException();
-	}
-
-	public Task<bool> WriteAsync(HealthParameter healthParameter, DateTime? date, double valueToStore, string unit)
-	{
-		throw new NotImplementedException();
+		try
+		{
+			var workouts = await ReadAllWorkoutsAsync(workoutType, from, until);
+			return workouts.OrderByDescending(w => w.Until).FirstOrDefault();
+		}
+		catch (HealthException)
+		{
+			throw;
+		}
+		catch (Exception ex)
+		{
+			throw new HealthException(ex.Message, ex);
+		}
 	}
 }
-
-//partial class HealthDataProviderImplementation : IHealth
-//{
-
-//	// Set of static methods for working with POSIX time
-//	public static class TimeUtility
-//	{
-//		const string tag = "TimeUtility";
-
-//		// Start of POSIX time
-//		static readonly DateTime unixEpoch =
-//			new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-
-//		// A week in milliseconds
-//		const long weekInMillis = 1000 * 60 * 60 * 24 * 7;
-
-//		// 48 hours in milliseconds
-//		const long twoDaysInMillis = 1000 * 60 * 60 * 24 * 2;
-
-//		// Current POSIX time
-//		public static long CurrentMillis()
-//		{
-//			return (long)(DateTime.UtcNow - unixEpoch).TotalMilliseconds;
-//		}
-
-//		// A week ago in POSIX time
-//		public static long WeekAgoMillis()
-//		{
-//			return (long)(DateTime.UtcNow - unixEpoch).TotalMilliseconds - weekInMillis;
-//		}
-
-//		// 48 hours ago in POSIX time
-//		public static long TwoDaysAgoMillis()
-//		{
-//			// We add a 1 to ensure only two buckets of 24 hours apiece are created
-//			return (long)(DateTime.UtcNow - unixEpoch).TotalMilliseconds - twoDaysInMillis + 1;
-//		}
-
-//		// Converts POSIX time to DateTime
-//		public static DateTime FromMillis(long millis)
-//		{
-//			return unixEpoch.AddMilliseconds(millis);
-//		}
-
-//		// Calculate how many days in the past a day is from today
-//		public static uint DaysInPast(DateTime dateTime)
-//		{
-//			return (uint)(DateTime.Now.Date - dateTime.Date).Days;
-//		}
-
-//	}
-
-//	readonly Dictionary<HealthParameter, Android.Gms.Fitness.Data.DataType> healthParameterMapping = new()
-//	{
-//		{HealthParameter.ActiveEnergyBurned, Android.Gms.Fitness.Data.DataType.TypeCaloriesExpended},
-//		//{HealthParameter.AtrialFibrillationBurden, /*not supported*/}
-//		//{HealthParameter.BasalBodyTemperature,  /*not supported*/},
-//		{HealthParameter.BasalEnergyBurned, Android.Gms.Fitness.Data.DataType.TypeBasalMetabolicRate},
-//		//{HealthParameter.BloodAlcoholContent, /*not supported*/},
-//		//{HealthParameter.BloodGlucose, /*not supported*/},
-//		//{HealthParameter.BloodPressureDiastolic,  /*not supported*/},
-//		//{HealthParameter.BloodPressureSystolic, /*not supported*/},
-//		{HealthParameter.BodyFatPercentage, Android.Gms.Fitness.Data.DataType.TypeBodyFatPercentage},
-//		{HealthParameter.BodyMass, Android.Gms.Fitness.Data.DataType.TypeWeight},
-//		//{HealthParameter.BodyMassIndex, /*not supported*/},
-//		//{HealthParameter.BodyTemperature, /*not supported*/},	
-//		{HealthParameter.DietaryBiotin, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryCaffeine, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryCalcium, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryCarbohydrates, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryChloride, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryCholesterol, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryChromium, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryCopper, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryEnergyConsumed, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryFatMonounsaturated, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryFatPolyunsaturated, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryFatSaturated, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryFatTotal, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryFiber, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryFolate, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryIodine, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryIron, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryMagnesium, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryManganese, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryMolybdenum, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryNiacin, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryPantothenicAcid, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryPhosphorus, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryPotassium, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryProtein, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryRiboflavin, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietarySelenium, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietarySodium, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietarySugar, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryThiamin, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryVitaminA, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryVitaminB12, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryVitaminB6, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryVitaminC, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryVitaminD, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryVitaminE, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryVitaminK, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryWater, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.DietaryZinc, Android.Gms.Fitness.Data.DataType.TypeNutrition},
-//		{HealthParameter.HeartRate, Android.Gms.Fitness.Data.DataType.TypeHeartRateBpm},
-//		{HealthParameter.Height, Android.Gms.Fitness.Data.DataType.TypeHeight},
-//		{HealthParameter.LeanBodyMass, Android.Gms.Fitness.Data.DataType.TypeWeight},
-//		{HealthParameter.DistanceCycling, Android.Gms.Fitness.Data.DataType.AggregateDistanceDelta},
-//		{HealthParameter.DistanceWalkingRunning, Android.Gms.Fitness.Data.DataType.AggregateDistanceDelta},
-//		{HealthParameter.DistanceWheelchair, Android.Gms.Fitness.Data.DataType.AggregateDistanceDelta},
-//		// {HealthParameter.ElectrodermalActivity, /*not supported*/ },
-//		// {HealthParameter.EnvironmentalAudioExposure, /*not supported*/ },
-//		{HealthParameter.ExerciseTime, Android.Gms.Fitness.Data.DataType.TypeMoveMinutes},
-//		{HealthParameter.FlightsClimbed, Android.Gms.Fitness.Data.DataType.TypeHeight},
-//		//{HealthParameter.ForcedExpiratoryVolume1, /*not supported*/ }
-//		{HealthParameter.StepCount, Android.Gms.Fitness.Data.DataType.TypeStepCountDelta},
-//	};
-
-//	readonly SemaphoreSlim semaphore = new(1, 1);
-
-//	readonly PackageManager? packageManager = Application.Context.PackageManager;
-
-//	public bool IsSupported => true;
-//	void CreateGoogleApiClient()
-//	{
-		
-
-
-//		//GoogleApiClient mClient = new GoogleApiClient.Builder(Application.Context)
-//		//		.AddApi(FitnessClass.HISTORY_API)
-//		//		.AddScope(new Scope(Scopes.FitnessActivityRead))
-//		//		.AddConnectionCallbacks(this)
-//		//		.AddOnConnectionFailedListener(this)
-//		//	.Build();
-
-//	}
-
-
-//	public Task<bool> CheckPermissionAsync(HealthParameter healthParameter, PermissionType permissionType)
-//	{
-//		var activity = Platform.CurrentActivity;
-//		//Android.Gms.Fitness.Data.DataType.TypeStepCountDelta
-
-//		throw new NotImplementedException();
-//	}
-
-//	public Task<List<Sample>> ReadAllAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
-//	{
-//		throw new NotImplementedException();
-//	}
-
-//	public Task<List<Workout>> ReadAllWorkoutsAsync(WorkoutType workoutType, DateTime from, DateTime until)
-//	{
-//		throw new NotImplementedException();
-//	}
-
-//	public Task<double?> ReadAverageAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
-//	{
-//		throw new NotImplementedException();
-//	}
-
-//	public Task<double> ReadCountAsync(HealthParameter healthParameter, DateTime from, DateTime until)
-//	{
-//		throw new NotImplementedException();
-//	}
-
-//	public async Task<double?> ReadLatestAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
-//	{
-
-//		await semaphore.WaitAsync();
-//		var tcs = new TaskCompletionSource<double?>();
-
-//		try
-//		{
-//			if (!healthParameterMapping.TryGetValue(healthParameter, out var requestedHealthParameter))
-//			{
-//				throw new HealthException($"{healthParameter} not available");
-//			}
-
-//			// Prepare the time range
-//			var startTime = from.ToUnixTimeMilliseconds();
-//			var endTime = until.ToUnixTimeMilliseconds();
-
-//			// Build the data request
-//			var readRequest = new DataReadRequest.Builder()
-//				.Aggregate(requestedHealthParameter)
-//				.BucketByTime(1, Java.Util.Concurrent.TimeUnit.Microseconds)
-//				.SetTimeRange(startTime, endTime, Java.Util.Concurrent.TimeUnit.Microseconds)
-//				.Build();
-
-
-//		}
-//		catch (Exception ex)
-//		{
-//			tcs.SetException(new HealthException(ex.Message, ex));
-//		}
-//		finally
-//		{
-//			semaphore.Release();
-//		}
-
-//		return await tcs.Task;
-//	}
-
-//	public Task<Workout?> ReadLatestWorkoutAsync(WorkoutType workoutType, DateTime from, DateTime until)
-//	{
-//		throw new NotImplementedException();
-//	}
-
-//	public Task<double?> ReadMaxAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
-//	{
-//		throw new NotImplementedException();
-//	}
-
-//	public Task<double?> ReadMinAsync(HealthParameter healthParameter, DateTime from, DateTime until, string unit)
-//	{
-//		throw new NotImplementedException();
-//	}
-
-//	public Task<bool> WriteAsync(HealthParameter healthParameter, DateTime? date, double valueToStore, string unit)
-//	{
-//		throw new NotImplementedException();
-//	}
-	
-//}
