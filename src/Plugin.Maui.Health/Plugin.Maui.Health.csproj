@@ -74,9 +74,7 @@
 
 	<!-- Android Health Connect (replaces deprecated Google Fit API) -->
 	<ItemGroup Condition="'$(TargetFramework)' == 'net9.0-android'">
-	  <PackageReference Include="Xamarin.AndroidX.Health.Connect.Client">
-	    <Version>1.1.0.5</Version>
-	  </PackageReference>
+	  <PackageReference Include="Xamarin.AndroidX.Health.Connect.ConnectClient" Version="1.1.0.2" />
 	</ItemGroup>
 
 </Project>
